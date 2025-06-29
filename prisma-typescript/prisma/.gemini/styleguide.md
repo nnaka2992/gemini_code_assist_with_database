@@ -239,6 +239,65 @@ EXECUTE FUNCTION archive_deleted_user();
 - Deleted table names MUST follow the pattern: `Deleted{OriginalModelName}`
 - Example: `User` → `DeletedUser`, `Post` → `DeletedPost`
 
+### 8.4. Gemini Code Assist Implementation Notes
+When implementing deletion functionality, Gemini Code Assist should suggest the following changes:
+
+1. **For each model that requires deletion tracking**, suggest creating:
+   - A corresponding `Deleted{ModelName}` model in schema.prisma
+   - A migration to create the deleted table
+   - A trigger SQL file in `prisma/triggers/` directory
+
+2. **Deleted table structure** should include:
+   - All fields from the original model (with same types but without unique constraints)
+   - `deletedAt: DateTime @default(now())`
+   - `deletedBy: String? @db.Uuid` (optional user ID who performed deletion)
+
+3. **Trigger implementation** should:
+   - Be created in `prisma/triggers/{model_name}_deletion.sql`
+   - Copy all fields from the original record to the deleted table
+   - Use `current_setting('app.current_user_id', true)::UUID` for deletedBy
+   - Be applied after migrations using a custom script
+
+4. **Example suggestion for a Post model**:
+   ```
+   // In schema.prisma - suggest adding:
+   model DeletedPost {
+     userId    String   @db.Uuid
+     id        String   @db.Uuid
+     title     String
+     content   String?
+     published Boolean
+     authorId  String   @db.Uuid
+     createdAt DateTime
+     updatedAt DateTime
+     deletedAt DateTime @default(now())
+     deletedBy String?  @db.Uuid
+     
+     @@id([userId, id])
+   }
+   
+   // In prisma/triggers/post_deletion.sql - suggest creating:
+   CREATE OR REPLACE FUNCTION archive_deleted_post()
+   RETURNS TRIGGER AS $$
+   BEGIN
+     INSERT INTO "DeletedPost" (
+       "userId", id, title, content, published, "authorId",
+       "createdAt", "updatedAt", "deletedAt", "deletedBy"
+     )
+     VALUES (
+       OLD."userId", OLD.id, OLD.title, OLD.content, OLD.published, OLD."authorId",
+       OLD."createdAt", OLD."updatedAt", NOW(), current_setting('app.current_user_id', true)::UUID
+     );
+     RETURN OLD;
+   END;
+   $$ LANGUAGE plpgsql;
+   
+   CREATE TRIGGER post_deletion_trigger
+   BEFORE DELETE ON "Post"
+   FOR EACH ROW
+   EXECUTE FUNCTION archive_deleted_post();
+   ```
+
 ## 9. Schema Structure & Style
 ### 9.1. Field Ordering
 To ensure schema.prisma is highly readable and consistent, fields within a model MUST be declared in the following order:
